@@ -14,3 +14,8 @@ Initial public release.
   application
 * Support for http proxy as apt cache
 * Support for pip wheelhouse cache
+
+v0.1.1
+------
+
+* fix dictionary in setup.py should be list

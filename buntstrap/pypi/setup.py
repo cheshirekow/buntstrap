@@ -2,7 +2,7 @@ import io
 from setuptools import setup
 
 GITHUB_URL = 'https://github.com/cheshirekow/buntstrap'
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 with io.open('README.rst', encoding='utf8') as infile:
   long_description = infile.read()
@@ -22,7 +22,7 @@ setup(
     entry_points={
         'console_scripts': ['buntstrap=buntstrap.__main__:main'],
     },
-    install_requires={
+    install_requires=[
       'uchroot',
-    }
+    ]
 )
