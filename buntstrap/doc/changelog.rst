@@ -19,3 +19,14 @@ v0.1.1
 ------
 
 * fix dictionary in setup.py should be list
+
+v0.1.2
+------
+
+* add command line help
+* add warning if unused config file option
+* add --dump-config
+* split size report and package extraction into two separate steps
+* added --terminate-after config/command-line option
+* Add buntstrap.size_report command line utility
+* Add buntstrap.freeze command line utility

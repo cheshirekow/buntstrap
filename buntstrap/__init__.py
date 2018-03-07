@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 
 from buntstrap import chroot
@@ -216,18 +217,53 @@ def get_file_size(file_path):
     return infile.tell()
 
 
+def get_apt_report(deblist):
+  """
+  Returns a size report: a list of tuples in the form of
+  (package_name, packaged_size, installed_size, description)
+  """
+
+  report = []
+  prev_msg_len = 0
+  for idx, deb_path in enumerate(deblist):
+    msg = '\rGeneratingReport [{:6.2f}%]:{:20s}'.format(
+        100.0 * (idx + 1) / len(deblist),
+        get_deb_item(deb_path, 'Package'))
+    sys.stdout.write('\r')
+    sys.stdout.write(' ' * prev_msg_len)
+    sys.stdout.write('\r')
+    sys.stdout.write(msg)
+    sys.stdout.flush()
+    prev_msg_len = len(msg)
+
+    package_name = get_deb_item(deb_path, 'Package')
+    package_version = get_deb_item(deb_path, 'Version')
+    package_size = get_file_size(deb_path)
+    try:
+      installed_size = int(get_deb_item(deb_path, 'Installed-Size')) * 1024
+    except (subprocess.CalledProcessError, ValueError):
+      installed_size = 0
+
+    try:
+      description = get_deb_item(deb_path, 'Description-en')
+    except subprocess.CalledProcessError:
+      description = None
+    report.append((package_name, package_size, installed_size, description,
+                   package_version))
+
+  sys.stdout.write('\rGenerating Report [100.00%]\n')
+  return report
+
+
 def unpack_archives(rootfs, deb_list):
   """
   Extract a debian package into rootfs the same way that multistrap would.
   According to the documentation this is the same set of steps dpkg would do
   up to the point of running configure scripts.
 
-  `rootfs`: path to the root filesystem where we want to install packages
-  `deb_list`: list of paths to `.deb` files that are to be installed in the
-              `rootfs`.
-
-  Returns a size report: a list of tuples in the form of
-  (package_name, packaged_size, installed_size, description)
+  ``rootfs``: path to the root filesystem where we want to install packages
+  ``deb_list``: list of paths to `.deb` files that are to be installed in the
+                ``rootfs``.
   """
 
   unfiltered_len = len(deb_list)
@@ -242,7 +278,6 @@ def unpack_archives(rootfs, deb_list):
   except OSError:
     pass
 
-  report = []
   prev_msg_len = 0
   for idx, deb_path in enumerate(deb_list):
     msg = '\rUnpacking [{:6.2f}%]:{:20s}'.format(
@@ -250,43 +285,30 @@ def unpack_archives(rootfs, deb_list):
         get_deb_item(deb_path, 'Package'))
     sys.stdout.write('\r')
     sys.stdout.write(' ' * prev_msg_len)
+    sys.stdout.write('\r')
     sys.stdout.write(msg)
     sys.stdout.flush()
     prev_msg_len = len(msg)
-
-    package_name = get_deb_item(deb_path, 'Package')
-    package_size = get_file_size(deb_path)
-    try:
-      installed_size = int(get_deb_item(deb_path, 'Installed-Size'))
-    except (subprocess.CalledProcessError, ValueError):
-      installed_size = 0
-
-    try:
-      description = get_deb_item(deb_path, 'Description-en')
-    except subprocess.CalledProcessError:
-      description = None
-    report.append((package_name, package_size, installed_size, description))
     extract_deb(deb_path, rootfs)
 
   sys.stdout.write('\rUnpacking [100.00%]\n')
-  return report
 
 
-def unpack_apt_archives_plus(rootfs, external_debs=None):
+def get_apt_archives_plus(rootfs, external_debs=None):
   """
-  Unpack all of the archives in the primed apt-cache on `rootfs`, as well as
-  thos in the list `external_debs`.
+  Return a list of all  archives in the primed apt-cache on `rootfs`, as well as
+  those in the list `external_debs`.
   """
 
   cache_dir = os.path.join(rootfs, 'var/cache/apt/archives')
-  deb_list = [os.path.join(cache_dir, filename)
-              for filename in os.listdir(cache_dir)
-              if filename.endswith('.deb')]
+  deblist = [os.path.join(cache_dir, filename)
+             for filename in os.listdir(cache_dir)
+             if filename.endswith('.deb')]
 
   if external_debs is not None:
-    deb_list.extend(external_debs)
+    deblist.extend(external_debs)
 
-  return unpack_archives(rootfs, deb_list)
+  return deblist
 
 
 def apply_patch_text(patch_text, apply_dir):
@@ -644,65 +666,6 @@ def get_apt_command(arch, rootfs, apt_cacher):
   return base_cmd
 
 
-def print_size_report(report_path, include_packed_size=True,
-                      include_size_on_disk=True,
-                      include_description=True,
-                      human_readable=True,
-                      sort_column=0):
-  """
-  Pretty-print a sorted size report from a json package report
-  """
-
-  with open(report_path, 'r') as infile:
-    report_data = json.load(infile)
-
-  sorted_items = sorted(((item[1], int(item[2]) * 1024, item[0], item[3])
-                         for item in report_data), key=lambda x: x[sort_column])
-
-  fmt_parts = []
-  if include_packed_size:
-    if human_readable:
-      fmt_parts.append('{:10s}')
-    else:
-      fmt_parts.append('{:12d}')
-  if include_size_on_disk:
-    if human_readable:
-      fmt_parts.append('{:10s}')
-    else:
-      fmt_parts.append('{:12d}')
-  fmt_parts.append('{:20s}')
-
-  if include_description:
-    fmt_parts.append('{:30s}')
-
-  format_str = ' '.join(fmt_parts) + '\n'
-
-  for package_size, installed_size, package, description in sorted_items:
-    description_lines = description.splitlines()
-    if description_lines:
-      description_str = description_lines[0][:30]
-    else:
-      description_str = description
-
-    args = []
-    if include_packed_size:
-      if human_readable:
-        args.append(util.get_human_readable_size(package_size))
-      else:
-        args.append(package_size)
-    if include_size_on_disk:
-      if human_readable:
-        args.append(util.get_human_readable_size(installed_size))
-      else:
-        args.append(installed_size)
-    args.append(package)
-    if include_description:
-      args.append(description_str)
-
-    logging.info(format_str.format(*args))
-  sys.stdout.flush()
-
-
 def iter_mounts():
   """
   Return a generator that iterates over split lines in /proc/mounts. The format
@@ -757,6 +720,9 @@ def create_rootfs(config):
   if not config.apt_skip_update:
     util.print_and(subprocess.check_call, apt_cmd + ['update'])
 
+  if config.terminate_after == 'apt-update':
+    return
+
   default_packages = get_default_packages(config.rootfs,
                                           config.apt_include_essential,
                                           config.apt_include_priorities)
@@ -779,7 +745,12 @@ def create_rootfs(config):
                    + ['-y', '--force-yes', 'install']
                    + apt_package_list)
 
-  report = unpack_apt_archives_plus(config.rootfs, config.external_debs)
+  if config.terminate_after == 'apt-download':
+    return
+
+  deblist = get_apt_archives_plus(config.rootfs, config.external_debs)
+  report = get_apt_report(deblist)
+
   if config.apt_size_report is not None:
     parent_dir = os.path.dirname(config.apt_size_report)
     try:
@@ -788,6 +759,14 @@ def create_rootfs(config):
       pass
     with open(config.apt_size_report, 'w') as reportfile:
       json.dump(report, reportfile, indent=2, separators=(',', ': '))
+
+  if config.terminate_after == 'size-report':
+    return
+
+  unpack_archives(config.rootfs, deblist)
+
+  if config.terminate_after == 'dpkg-extract':
+    return
 
   logging.info('tweaking new filesystem')
   tweak_new_filesystem(config.rootfs)
@@ -805,6 +784,9 @@ def create_rootfs(config):
       logging.info('Executing dpkg --configure')
       configure_dpkgs(chroot_app, config.rootfs,
                       config.dpkg_configure_retry_count)
+
+      if config.terminate_after == 'dpkg-extract':
+        return
 
       if config.pip_packages:
         logging.info('Installing pip packages')

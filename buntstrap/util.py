@@ -75,3 +75,46 @@ def print_and(spfn, cmd, *args, **kwargs):
   # wrapped_cmd = wrapper.fill(quote_args(cmd))
   logging.debug('%s: %s', spfn.__name__, quote_args(cmd))
   return wrap_subprocess(spfn, cmd, *args, **kwargs)
+
+
+class PackageMeta(tuple):
+  """
+  Tuple of package metadata
+  """
+
+  def as_dict(self, human_readable):
+    out = {
+        u'name': self[0],
+        u'description': self[3],
+        u'version': self[4]
+    }
+
+    if human_readable:
+      out.update({
+          u'packed_size': get_human_readable_size(self[1]),
+          u'size_on_disk': get_human_readable_size(self[2]),
+      })
+    else:
+      out.update({
+          u'packed_size': self[1],
+          u'size_on_disk': self[2],
+      })
+
+  def get(self, key):
+    return self[{
+        u'name': 0,
+        u'packed_size': 1,
+        u'size_on_disk': 2,
+        u'description': 3,
+        u'version': 4
+    }[key]]
+
+  def sub(self, columns, human_readable=False):
+    out = {}
+    for key in columns:
+      value = self.get(key)
+      if isinstance(value, int) and human_readable:
+        value = get_human_readable_size(value)
+      out[key] = value
+
+    return out

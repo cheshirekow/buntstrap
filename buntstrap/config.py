@@ -5,9 +5,12 @@ convenience utilities for specifying various configuration options.
 
 import httplib
 import inspect
+import json
 import logging
 import os
+import pprint
 import subprocess
+import textwrap
 
 from buntstrap import chroot
 from buntstrap import util
@@ -188,7 +191,12 @@ class Configuration(object):
                pip_packages=None,
                qemu_binary=None,
                binds=None,
-               **_):
+               terminate_after=None,
+               **extra):
+    extra_keys = [key for key in extra if not key.startswith('_')]
+    if extra_keys:
+      logging.warn("Unused config file options: %s",
+                   ', '.join(sorted(extra_keys)))
 
     self.architecture = get_default(architecture, get_host_architecture())
     self.suite = get_default(suite, get_host_suite())
@@ -215,6 +223,7 @@ class Configuration(object):
     # default.
     self.binds = get_default(binds, ['/dev/urandom',
                                      '/etc/resolv.conf'])
+    self.terminate_after = terminate_after
 
   def assert_valid(self):
     if os.path.exists(self.rootfs):
@@ -222,10 +231,158 @@ class Configuration(object):
         logging.warn("target rootfs dir %s exists and is not empty",
                      self.rootfs)
 
+  def get_field_names(self):
+    """
+    Return a list of field names, extracted from kwargs to __init__().
+    """
+    return inspect.getargspec(self.__init__).args[1:]
+
   def serialize(self):
     """
     Return a dictionary describing the configuration.
     """
-    argspec = inspect.getargspec(self.__init__)
     return {field: getattr(self, field)
-            for field in argspec.args[1:]}
+            for field in self.get_field_names()}
+
+
+VARCHOICES = {
+    'architecture': ['amd64', 'arm64', 'armhf'],
+    'suite': ['trusty', 'utopic', 'vivid', 'wily', 'xenial', 'yakkety',
+              'zesty', 'artful'],
+    'apt_include_priorities': ['required', 'important', 'standard'],
+    'terminate_after': ['apt-update', 'apt-download',
+                        'size-report', 'dpkg-extract', 'dpkg-configure']
+}
+
+VARDOCS = {
+    "architecture":
+    """
+dpkg architecture of the rootfs to build. If you'd like to know what
+architecture you're currently on, try running `dpkg --print-architecture`.
+""",
+    "suite":
+    """\
+this is only used to select reasonable defaults if you leave out some
+configuration parameters, but specify the ubuntu target suite here.
+""",
+    "chroot_app":
+    """\
+Which chroot application to use. There are three builtin options:
+1. PosixApp : uses posix ``chroot`` and must be run as root
+2. ProotApp : uses ``proot``
+3. UchrootApp : uses ``uchroot`` which creats a user namespace. All files
+   in the target rootfs will have uid/gid ownership with mapped values
+""",
+    "rootfs":
+    """\
+This is the directory of the rootfs to bootstrap.
+""",
+    "apt_http_proxy":
+    """\
+If not none, then we'll set the http proxy environment variables for APT
+using this. If apt-cacher-ng is installed an active it is usually at
+http://localhost:3142. The function ``config.get_apt_cache_url()`` will
+check for  apt-cacher-ng and return it if found, otherwise None.
+""",
+    "apt_packages":
+    """\
+List of packages to install with apt
+""",
+    "apt_include_essential":
+    """\
+If true, then we will request a list of all "essential" packages from apt
+and include them in the installation.
+""",
+    "apt_include_priorities":
+    """\
+Specify the set of priority package lists to include.
+'required': dpkg wont function without these
+'important': standard set of minimal unix programs
+'standard':  reasonably small but not too limited character-mode system
+""",
+    "apt_sources":
+    """\
+This is the string contents of the apt sources list used to bootstrap the
+system. The file will be written into the target rootfs before executing
+apt but will be removed afterward.
+""",
+    "apt_skip_update":
+    """\
+If you already have a rootfs that has been bootstrapped and you wish to
+(re)-install packages you can set this true to skip the `apt-get` update
+step. This is mostly useful during debugging/testing iteration.
+""",
+    "apt_size_report":
+    """\
+If you would like buntstrap to write out a package size report then specify
+here the output path where you would like that report to go.
+""",
+    "apt_clean":
+    """\
+If true, the apt archive cache and other state files are cleaned up. Use this
+if you want to reduce the size of your rootfs.
+""",
+    "external_debs":
+    """\
+If you have any plain .deb packages to install inside the rootfs list them
+here. They will be extracted along with those downloaded by apt and configured
+with the rest.
+""",
+    "dpkg_configure_retry_count":
+    """\
+Sometimes a package will fail to configure correctly only because it hasn't
+correctly declared it's dependencies and it gets configured out of order.
+An easy work around is to just retry dpkg --configure again. Set here the
+number of times to try execugind `dpkg --configure`.
+""",
+    "pip_wheelhouse":
+    """\
+If installing any packages through pip, you can re-use an existing wheelhouse
+to cache binary wheels and speed up repeated bootstrapping. Specify the
+wheelhouse directory here
+""",
+    "pip_packages":
+    """\
+List of python package to install using pip. Note that if this list is not
+empty then `python-pip` will be included in apt_packages (if it is not
+already) and pip will be installed itself with `pip install --upgrade pip`.
+If you want to pin a specific version of pip then make sure you list it here.
+""",
+    "qemu_binary":
+    """\
+If you are cross-arch bootstrapping from amd64 to arm then specify here the
+path to the qemu-static binary that should be copied into the target rootfs
+during chroot execution. ``config.get_qemu_binary(arch)`` is a convenience
+function which returns the default path for the qemu-static binary for arm64
+or armhf
+""",
+    "binds":
+    """\
+List of paths to bind-mount to the target rootfs. If a path is a realfile
+it will be copied into the rootfs and deleted afterward. If it is a
+directory then it will be bind-mounted (or emulated in the proot case)
+""",
+    "terminate_after":
+    """\
+Terminate early after performing the specified step.
+"""
+}
+
+
+def dump_config(outfile):
+  """
+  Dump the default configuration to ``outfile``.
+  """
+
+  cfg = Configuration()
+  ppr = pprint.PrettyPrinter(indent=2)
+  for key in cfg.get_field_names():
+    helptext = VARDOCS.get(key, None)
+    if helptext:
+      for line in textwrap.wrap(helptext, 78):
+        outfile.write('# ' + line + '\n')
+    value = getattr(cfg, key)
+    if isinstance(value, dict):
+      outfile.write('{} = {}\n\n'.format(key, json.dumps(value, indent=2)))
+    else:
+      outfile.write('{} = {}\n\n'.format(key, ppr.pformat(value)))

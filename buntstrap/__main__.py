@@ -17,7 +17,7 @@ default. If you wish to suppress this behavior, then specify
 --apt-cache-url "none://"
 """
 
-VERSION = '0.1.0'
+VERSION = '0.1.2'
 
 
 def parse_bool(string):
@@ -46,33 +46,32 @@ def main():
                       help='Increase log level to include info/debug')
   parser.add_argument('-c', '--config',
                       help='Configuration file to use')
-
-  choices = {
-      'architecture': ['amd64', 'arm64', 'armhf'],
-      'suite': ['trusty', 'utopic', 'vivid', 'wily', 'xenial', 'yakkety',
-                'zesty', 'artful']
-  }
+  parser.add_argument('--dump-config', action='store_true',
+                      help='Dump default config')
 
   default_dict = config.Configuration().serialize()
   for key, value in default_dict.items():
-    if key == 'rootfs':
+    helpstr = config.VARDOCS.get(key, None)
+    if key == ['rootfs', 'chroot_app', 'user_quirks']:
       continue
     # NOTE(josh): argparse store_true isn't what we want here because we want
     # to distinguish between "not specified" = "default" and "specified"
     elif isinstance(value, bool):
       parser.add_argument('--' + key.replace('_', '-'), nargs='?', default=None,
-                          const=True, type=parse_bool)
+                          const=True, type=parse_bool, help=helpstr)
     elif isinstance(value, (str, unicode, int, float)) or value is None:
-      if key in choices:
-        parser.add_argument('--' + key.replace('_', '-'), choices=choices[key])
+      if key in config.VARCHOICES:
+        parser.add_argument('--' + key.replace('_', '-'), type=type(value),
+                            choices=config.VARCHOICES[key], help=helpstr)
       else:
-        parser.add_argument('--' + key.replace('_', '-'))
+        parser.add_argument('--' + key.replace('_', '-'), type=type(value),
+                            help=helpstr)
     # NOTE(josh): argparse behavior is that if the flag is not specified on
     # the command line the value will be None, whereas if it's specified with
     # no arguments then the value will be an empty list. This exactly what we
     # want since we can ignore `None` values.
     elif isinstance(value, (list, tuple)):
-      parser.add_argument('--' + key.replace('_', '-'), nargs='*')
+      parser.add_argument('--' + key.replace('_', '-'), nargs='*', help=helpstr)
 
   parser.add_argument('--chroot-impl', default=None,
                       choices=['none', 'chroot', 'proot', 'uchroot'],
@@ -80,6 +79,10 @@ def main():
   parser.add_argument('rootfs', nargs='?',
                       help='path of the rootfs to bootstrap')
   args = parser.parse_args()
+  if args.dump_config:
+    config.dump_config(sys.stdout)
+    sys.exit(0)
+
   logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
   config_dict = {}

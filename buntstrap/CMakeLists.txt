@@ -1,4 +1,11 @@
-set(buntstrap_py_files __init__.py __main__.py chroot.py config.py util.py)
+set(buntstrap_py_files
+    __init__.py
+    __main__.py
+    chroot.py
+    config.py
+    freeze.py
+    size_report.py
+    util.py)
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/buntstrap_format.stamp
                    COMMAND autopep8 -i ${buntstrap_py_files}
