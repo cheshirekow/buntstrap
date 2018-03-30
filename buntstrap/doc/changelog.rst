@@ -30,3 +30,13 @@ v0.1.2
 * added --terminate-after config/command-line option
 * Add buntstrap.size_report command line utility
 * Add buntstrap.freeze command line utility
+
+v0.1.3
+------
+
+* bunstrap.freeze can work with a report json or dpkg in a chroot
+* move user quirks after chroot app construction
+* user quirks takes a chroot app as input
+* add java webupd8team ppa to default bunstrap
+* fix default user quirks noop()
+* downsample some stdout progress messages

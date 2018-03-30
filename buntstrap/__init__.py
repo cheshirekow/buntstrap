@@ -18,7 +18,7 @@ import types
 from buntstrap import chroot
 from buntstrap import util
 
-VERSION = '0.1.0'
+VERSION = '0.1.3'
 
 
 def install_apt_key(root_dir, keyring_filename, gpg_key):
@@ -225,16 +225,19 @@ def get_apt_report(deblist):
 
   report = []
   prev_msg_len = 0
+  last_print_time = 0
   for idx, deb_path in enumerate(deblist):
-    msg = '\rGeneratingReport [{:6.2f}%]:{:20s}'.format(
-        100.0 * (idx + 1) / len(deblist),
-        get_deb_item(deb_path, 'Package'))
-    sys.stdout.write('\r')
-    sys.stdout.write(' ' * prev_msg_len)
-    sys.stdout.write('\r')
-    sys.stdout.write(msg)
-    sys.stdout.flush()
-    prev_msg_len = len(msg)
+    if time.time() - last_print_time > 0.5:
+      msg = '\rGeneratingReport [{:6.2f}%]:{:20s}'.format(
+          100.0 * (idx + 1) / len(deblist),
+          get_deb_item(deb_path, 'Package'))
+      sys.stdout.write('\r')
+      sys.stdout.write(' ' * prev_msg_len)
+      sys.stdout.write('\r')
+      sys.stdout.write(msg)
+      sys.stdout.flush()
+      prev_msg_len = len(msg)
+      last_print_time = time.time()
 
     package_name = get_deb_item(deb_path, 'Package')
     package_version = get_deb_item(deb_path, 'Version')
@@ -279,16 +282,19 @@ def unpack_archives(rootfs, deb_list):
     pass
 
   prev_msg_len = 0
+  last_print_time = 0
   for idx, deb_path in enumerate(deb_list):
-    msg = '\rUnpacking [{:6.2f}%]:{:20s}'.format(
-        100.0 * (idx + 1) / len(deb_list),
-        get_deb_item(deb_path, 'Package'))
-    sys.stdout.write('\r')
-    sys.stdout.write(' ' * prev_msg_len)
-    sys.stdout.write('\r')
-    sys.stdout.write(msg)
-    sys.stdout.flush()
-    prev_msg_len = len(msg)
+    if time.time() - last_print_time > 0.5:
+      msg = '\rUnpacking [{:6.2f}%]:{:20s}'.format(
+          100.0 * (idx + 1) / len(deb_list),
+          get_deb_item(deb_path, 'Package'))
+      sys.stdout.write('\r')
+      sys.stdout.write(' ' * prev_msg_len)
+      sys.stdout.write('\r')
+      sys.stdout.write(msg)
+      sys.stdout.flush()
+      prev_msg_len = len(msg)
+      last_print_time = time.time()
     extract_deb(deb_path, rootfs)
 
   sys.stdout.write('\rUnpacking [100.00%]\n')
@@ -738,6 +744,7 @@ def create_rootfs(config):
                               '--allow-downgrades',
                               '--allow-remove-essential',
                               '--allow-change-held-packages',
+                              '--allow-unauthenticated',
                               'install'] + apt_package_list)
   else:
     util.print_and(subprocess.check_call,
@@ -772,7 +779,6 @@ def create_rootfs(config):
   tweak_new_filesystem(config.rootfs)
 
   logging.info('applying user quirks')
-  config.user_quirks()
 
   if config.chroot_app is None:
     logging.info('Skipping dpkg configure step')
@@ -780,6 +786,7 @@ def create_rootfs(config):
     chroot_app = config.chroot_app(config.rootfs, config.binds,
                                    config.qemu_binary,
                                    config.pip_wheelhouse)
+    config.user_quirks(chroot_app)
     with chroot_app:
       logging.info('Executing dpkg --configure')
       configure_dpkgs(chroot_app, config.rootfs,

@@ -75,6 +75,7 @@ deb [arch={arch}] {ubuntu_url} {suite} main universe multiverse
 deb [arch={arch}] {ubuntu_url} {suite}-updates main universe multiverse
 deb [arch={arch}] http://ppa.launchpad.net/lttng/stable-2.9/ubuntu {suite} main
 deb [arch={arch}] http://ppa.launchpad.net/nginx/stable/ubuntu {suite} main
+deb [arch={arch}] http://ppa.launchpad.net/webupd8team/java/ubuntu {suite} main
 """
 
 
@@ -93,7 +94,7 @@ def get_bootstrap_sources(arch, suite):
   return BOOTSTRAP_SOURCES.format(**fmt_args)
 
 
-def get_qemu_binary(target_arch):
+def default_qemu_binary(target_arch):
   """
   Return the path to qemu binary for the target architecture
   """
@@ -135,7 +136,7 @@ def get_default(obj, default):
   return obj
 
 
-def noop():
+def noop(chroot_app):  # pylint: disable=unused-argument
   """
   function which does nothing
   """
@@ -174,7 +175,7 @@ class Configuration(object):
   def __init__(self,
                architecture=None,
                suite=None,
-               chroot_app=None,
+               chroot_impl=None,
                rootfs=None,
                apt_http_proxy=None,
                apt_packages=None,
@@ -193,16 +194,23 @@ class Configuration(object):
                binds=None,
                terminate_after=None,
                **extra):
-    extra_keys = [key for key in extra if not key.startswith('_')]
+    extra_keys = []
+    for key in extra:
+      if key.startswith('_'):
+        continue
+      if inspect.ismodule(extra[key]):
+        continue
+      extra_keys.append(key)
+
     if extra_keys:
       logging.warn("Unused config file options: %s",
                    ', '.join(sorted(extra_keys)))
 
     self.architecture = get_default(architecture, get_host_architecture())
     self.suite = get_default(suite, get_host_suite())
-    self.chroot_app = get_default(chroot_app, chroot.UchrootApp)
+    self.chroot_impl = get_default(chroot_impl, 'uchroot')
     self.rootfs = get_default(rootfs, '.')
-    self.apt_http_proxy = apt_http_proxy
+    self.apt_http_proxy = get_default(apt_http_proxy, '')
     self.apt_packages = get_default(apt_packages, [])
     self.apt_include_essential = apt_include_essential
     self.apt_include_priorities = get_default(
@@ -214,7 +222,7 @@ class Configuration(object):
     self.apt_clean = apt_clean
     self.external_debs = get_default(external_debs, [])
     self.user_quirks = get_default(user_quirks, noop)
-    self.dpkg_configure_retry_count = dpkg_configure_retry_count
+    self.dpkg_configure_retry_count = get_default(dpkg_configure_retry_count, 1)
     self.pip_wheelhouse = pip_wheelhouse
     self.pip_packages = get_default(pip_packages, [])
     self.qemu_binary = qemu_binary
@@ -223,7 +231,18 @@ class Configuration(object):
     # default.
     self.binds = get_default(binds, ['/dev/urandom',
                                      '/etc/resolv.conf'])
-    self.terminate_after = terminate_after
+    self.terminate_after = get_default(terminate_after, 'finished')
+
+    if self.chroot_impl == 'chroot':
+      self.chroot_app = chroot.PosixApp
+    elif self.chroot_impl == 'proot':
+      self.chroot_app = chroot.ProotApp
+    elif self.chroot_impl == 'uchroot':
+      self.chroot_app = chroot.UchrootApp
+    elif self.chroot_impl == 'none':
+      self.chroot_app = None
+    else:
+      raise ValueError("Invalid chroot_impl choice {}".format(chroot_impl))
 
   def assert_valid(self):
     if os.path.exists(self.rootfs):
@@ -246,12 +265,14 @@ class Configuration(object):
 
 
 VARCHOICES = {
+    'apt_include_priorities': ['required', 'important', 'standard'],
     'architecture': ['amd64', 'arm64', 'armhf'],
+    'chroot_impl': ['none', 'chroot', 'proot', 'uchroot'],
     'suite': ['trusty', 'utopic', 'vivid', 'wily', 'xenial', 'yakkety',
               'zesty', 'artful'],
-    'apt_include_priorities': ['required', 'important', 'standard'],
     'terminate_after': ['apt-update', 'apt-download',
-                        'size-report', 'dpkg-extract', 'dpkg-configure']
+                        'size-report', 'dpkg-extract', 'dpkg-configure'],
+
 }
 
 VARDOCS = {
@@ -265,12 +286,12 @@ architecture you're currently on, try running `dpkg --print-architecture`.
 this is only used to select reasonable defaults if you leave out some
 configuration parameters, but specify the ubuntu target suite here.
 """,
-    "chroot_app":
+    "chroot_impl":
     """\
 Which chroot application to use. There are three builtin options:
-1. PosixApp : uses posix ``chroot`` and must be run as root
-2. ProotApp : uses ``proot``
-3. UchrootApp : uses ``uchroot`` which creats a user namespace. All files
+1. ``chroot`` : uses posix ``chroot`` and must be run as root
+2. ``proot`` : uses ``proot`` with ``-0`` root emulation
+3. ``uchroot`` : uses ``uchroot`` which creats a user namespace. All files
    in the target rootfs will have uid/gid ownership with mapped values
 """,
     "rootfs":
@@ -386,3 +407,48 @@ def dump_config(outfile):
       outfile.write('{} = {}\n\n'.format(key, json.dumps(value, indent=2)))
     else:
       outfile.write('{} = {}\n\n'.format(key, ppr.pformat(value)))
+
+
+def parse_bool(string):
+  if string.lower() in ('y', 'yes', 't', 'true', '1', 'yup', 'yeah', 'yada'):
+    return True
+  elif string.lower() in ('n', 'no', 'f', 'false', '0', 'nope', 'nah', 'nada'):
+    return False
+
+  logging.warn("Ambiguous truthiness of string '%s' evalutes to 'FALSE'",
+               string)
+  return False
+
+
+def add_to_argparse(parser, key, value):
+  """
+  Add ``key`` as a command line argument to the ``argparse.ArgumentParser``
+  ``parser``. Replace underscore with dash, infer type from ``value``,
+  lookup helpstring from VARDOCS, lookup choices in VARCHOICES.
+  """
+
+  helpstr = VARDOCS.get(key, None)
+
+  # NOTE(josh): argparse store_true isn't what we want here because we want
+  # to distinguish between "not specified" = "default" and "specified"
+  if isinstance(value, bool):
+    parser.add_argument('--' + key.replace('_', '-'), nargs='?', default=None,
+                        const=True, type=parse_bool, help=helpstr)
+  elif isinstance(value, (str, unicode, int, float)) or value is None:
+    if value is None:
+      valtype = str
+    else:
+      valtype = type(value)
+
+    if key in VARCHOICES:
+      parser.add_argument('--' + key.replace('_', '-'), type=valtype,
+                          choices=VARCHOICES[key], help=helpstr)
+    else:
+      parser.add_argument('--' + key.replace('_', '-'), type=valtype,
+                          help=helpstr)
+  # NOTE(josh): argparse behavior is that if the flag is not specified on
+  # the command line the value will be None, whereas if it's specified with
+  # no arguments then the value will be an empty list. This exactly what we
+  # want since we can ignore `None` values.
+  elif isinstance(value, (list, tuple)):
+    parser.add_argument('--' + key.replace('_', '-'), nargs='*', help=helpstr)
