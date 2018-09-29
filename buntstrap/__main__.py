@@ -10,6 +10,8 @@ import sys
 import buntstrap
 from buntstrap import config
 
+VERSION = "0.1.4"
+
 APT_CACHE_HELP = """url of apt-cacher-ng (or other apt proxy). If apt-cacher-ng
 is found running on the machine at localhost:3142, then it will be used by
 default. If you wish to suppress this behavior, then specify
@@ -37,7 +39,7 @@ def main():
                       help='Dump default config')
 
   default_dict = config.Configuration().serialize()
-  for key, value in default_dict.items():
+  for key, value in sorted(default_dict.items()):
     if key == ['rootfs', 'user_quirks']:
       continue
     config.add_to_argparse(parser, key, value)

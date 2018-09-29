@@ -18,7 +18,7 @@ import types
 from buntstrap import chroot
 from buntstrap import util
 
-VERSION = '0.1.3'
+VERSION = '0.1.4'
 
 
 def install_apt_key(root_dir, keyring_filename, gpg_key):
@@ -64,6 +64,10 @@ def force_symlink(target_path, link_location):
   create the symlink if needed, if it already exists but points somewhere
   else, then remove it and replace it.
   """
+
+  pardir = os.path.dirname(link_location)
+  if not os.path.exists(pardir):
+    os.makedirs(pardir)
 
   if os.path.lexists(link_location):
     assert os.path.islink(link_location), \
@@ -265,8 +269,9 @@ def unpack_archives(rootfs, deb_list):
   up to the point of running configure scripts.
 
   ``rootfs``: path to the root filesystem where we want to install packages
+
   ``deb_list``: list of paths to `.deb` files that are to be installed in the
-                ``rootfs``.
+  ``rootfs``.
   """
 
   unfiltered_len = len(deb_list)
@@ -480,6 +485,10 @@ def configure_dpkgs(chroot_app, rootfs, retry_count):
     timezone.write('America/Los_Angeles\n')
 
   # NOTE(josh): try to disable any daemons from starting
+  sbin = os.path.join(rootfs, 'usr/sbin')
+  if not os.path.exists(sbin):
+    os.makedirs(sbin)
+
   policy_path = os.path.join(rootfs, 'usr/sbin/policy-rc.d')
   with open(policy_path, 'w') as policy:
     policy.write(POLICY_SCRIPT)
@@ -639,19 +648,22 @@ def get_default_packages(rootfs, include_essential=False,
 APT_GET_FMT = """
 apt-get
   -o Apt::Architecture={arch}
-  -o Dir::Etc::TrustedParts={rootfs}/etc/apt/trusted.gpg.d
-  -o Dir::Etc::Trusted={rootfs}/etc/apt/trusted.gpg
   -o Apt::Get::Download-Only=true
   -o Apt::Install-Recommends=false
-  -o Dir={rootfs}/
-  -o Dir::Etc={rootfs}/etc/apt/
-  -o Dir::Etc::Parts={rootfs}/etc/apt/apt.conf.d/
-  -o Dir::Etc::PreferencesParts={rootfs}/etc/apt/preferences.d/
   -o APT::Default-Release=*
+  -o Acquire::Source-Symlinks=false
+  -o Acquire::Languages=none
+  -o Dir={rootfs}/
+  -o Dir::Cache={rootfs}/var/cache/apt/
+  -o Dir::Etc={rootfs}/etc/apt/
+  -o Dir::Etc::Main={rootfs}/etc/apt/apt.conf
+  -o Dir::Etc::Parts={rootfs}/etc/apt/apt.conf.d/
+  -o Dir::Etc::Preferences={rootfs}/etc/apt/preferences
+  -o Dir::Etc::PreferencesParts={rootfs}/etc/apt/preferences.d/
+  -o Dir::Etc::TrustedParts={rootfs}/etc/apt/trusted.gpg.d
+  -o Dir::Etc::Trusted={rootfs}/etc/apt/trusted.gpg
   -o Dir::State={rootfs}/var/lib/apt/
   -o Dir::State::Status={rootfs}/var/lib/dpkg/status
-  -o Dir::Cache={rootfs}/var/cache/apt/
-  -o Acquire::Source-Symlinks=false
 """
 
 APT_PROXY_FMT = """
@@ -723,86 +735,95 @@ def create_rootfs(config):
 
   apt_cmd = get_apt_command(config.architecture, config.rootfs,
                             config.apt_http_proxy)
-  if not config.apt_skip_update:
+
+  if config.is_enabled('apt-update'):
     util.print_and(subprocess.check_call, apt_cmd + ['update'])
-
-  if config.terminate_after == 'apt-update':
-    return
-
-  default_packages = get_default_packages(config.rootfs,
-                                          config.apt_include_essential,
-                                          config.apt_include_priorities)
-  if config.pip_packages:
-    default_packages.append('python-pip')
-  apt_package_list = list(sorted(set(config.apt_packages
-                                     + default_packages)))
-
-  apt_version = get_apt_version()
-  if apt_version >= [1, 2, 24]:
-    util.print_and(subprocess.check_call,
-                   apt_cmd + ['-y',
-                              '--allow-downgrades',
-                              '--allow-remove-essential',
-                              '--allow-change-held-packages',
-                              '--allow-unauthenticated',
-                              'install'] + apt_package_list)
   else:
-    util.print_and(subprocess.check_call,
-                   apt_cmd
-                   + ['-y', '--force-yes', 'install']
-                   + apt_package_list)
+    logging.info('skipping apt-update')
 
-  if config.terminate_after == 'apt-download':
-    return
+  if config.is_enabled('apt-download'):
+    default_packages = get_default_packages(config.rootfs,
+                                            config.apt_include_essential,
+                                            config.apt_include_priorities)
+    if config.pip_packages:
+      default_packages.append('python-pip')
+    apt_package_list = list(sorted(set(config.apt_packages
+                                       + default_packages)))
 
-  deblist = get_apt_archives_plus(config.rootfs, config.external_debs)
-  report = get_apt_report(deblist)
-
-  if config.apt_size_report is not None:
-    parent_dir = os.path.dirname(config.apt_size_report)
-    try:
-      os.makedirs(parent_dir)
-    except OSError:
-      pass
-    with open(config.apt_size_report, 'w') as reportfile:
-      json.dump(report, reportfile, indent=2, separators=(',', ': '))
-
-  if config.terminate_after == 'size-report':
-    return
-
-  unpack_archives(config.rootfs, deblist)
-
-  if config.terminate_after == 'dpkg-extract':
-    return
-
-  logging.info('tweaking new filesystem')
-  tweak_new_filesystem(config.rootfs)
-
-  logging.info('applying user quirks')
-
-  if config.chroot_app is None:
-    logging.info('Skipping dpkg configure step')
+    apt_version = get_apt_version()
+    if apt_version >= [1, 2, 24]:
+      util.print_and(subprocess.check_call,
+                     apt_cmd + ['-y',
+                                '--allow-downgrades',
+                                '--allow-remove-essential',
+                                '--allow-change-held-packages',
+                                '--allow-unauthenticated',
+                                'install'] + apt_package_list)
+    else:
+      util.print_and(subprocess.check_call,
+                     apt_cmd
+                     + ['-y', '--force-yes', 'install']
+                     + apt_package_list)
   else:
+    logging.info('skipping apt-download')
+
+  if config.is_enabled('size-report'):
+    deblist = get_apt_archives_plus(config.rootfs, config.external_debs)
+    report = get_apt_report(deblist)
+
+    if config.apt_size_report is not None:
+      parent_dir = os.path.dirname(config.apt_size_report)
+      try:
+        os.makedirs(parent_dir)
+      except OSError:
+        pass
+      with open(config.apt_size_report, 'w') as reportfile:
+        json.dump(report, reportfile, indent=2, separators=(',', ': '))
+  else:
+    logging.info('skipping size-report')
+
+  if config.is_enabled('dpkg-extract'):
+    unpack_archives(config.rootfs, deblist)
+  else:
+    logging.info('skipping dpkg-extract')
+
+  if config.is_enabled('tweak-fs'):
+    logging.info('tweaking new filesystem')
+    tweak_new_filesystem(config.rootfs)
+  else:
+    logging.info('skipping tweakfs')
+
+  if config.is_enabled('dpkg-configure') and config.chroot_app is not None:
     chroot_app = config.chroot_app(config.rootfs, config.binds,
                                    config.qemu_binary,
                                    config.pip_wheelhouse)
+    logging.info('applying user quirks')
     config.user_quirks(chroot_app)
     with chroot_app:
       logging.info('Executing dpkg --configure')
       configure_dpkgs(chroot_app, config.rootfs,
                       config.dpkg_configure_retry_count)
 
-      if config.terminate_after == 'dpkg-extract':
-        return
-
       if config.pip_packages:
         logging.info('Installing pip packages')
         install_pip_packages(chroot_app, config.rootfs, config.pip_packages)
+  else:
+    logging.info('skipping dpkg configure step')
 
-  if config.apt_clean:
+  if config.is_enabled('apt-clean'):
     # TODO(josh): document what this actually cleans up
     util.print_and(subprocess.check_call, apt_cmd + ['clean'])
 
-    cache_dir = os.path.join(config.rootfs, 'var/cache/apt/archives')
-    for filename in os.listdir(cache_dir):
-      os.remove(os.path.join(cache_dir, filename))
+    for cleanme in ['var/cache/apt/archives',
+                    'var/lib/apt/lists']:
+      cache_dir = os.path.join(config.rootfs, cleanme)
+      for filename in os.listdir(cache_dir):
+        fullpath = os.path.join(cache_dir, filename)
+        if os.path.isdir(fullpath):
+          continue
+        os.remove(fullpath)
+
+
+# gcc with no dpkg required: 89M, 36M squashed
+# gcc with dpkg required: 179M, 68M squashed
+# dpkg rquired alone: 101M, 37M squashed

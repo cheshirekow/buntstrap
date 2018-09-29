@@ -143,6 +143,17 @@ def noop(chroot_app):  # pylint: disable=unused-argument
   logging.info('no-op')
 
 
+PHASES = [
+    'apt-update',
+    'apt-download',
+    'size-report',
+    'dpkg-extract',
+    'tweak-fs',
+    'dpkg-configure',
+    'apt-clean',
+]
+
+
 class Configuration(object):
   """
   Aggregates both static-y and runtime-y options from a config file or command
@@ -182,7 +193,6 @@ class Configuration(object):
                apt_include_essential=False,
                apt_include_priorities=None,
                apt_sources=None,
-               apt_skip_update=False,
                apt_size_report=None,
                apt_clean=False,
                external_debs=None,
@@ -192,7 +202,8 @@ class Configuration(object):
                pip_packages=None,
                qemu_binary=None,
                binds=None,
-               terminate_after=None,
+               phases=None,
+               skip=None,
                **extra):
     extra_keys = []
     for key in extra:
@@ -215,9 +226,11 @@ class Configuration(object):
     self.apt_include_essential = apt_include_essential
     self.apt_include_priorities = get_default(
         apt_include_priorities, ['required', 'important', 'standard'])
+    if apt_include_priorities == ['none']:
+      self.apt_include_priorities = []
+
     self.apt_sources = get_default(
         apt_sources, get_bootstrap_sources(self.architecture, self.suite))
-    self.apt_skip_update = apt_skip_update
     self.apt_size_report = apt_size_report
     self.apt_clean = apt_clean
     self.external_debs = get_default(external_debs, [])
@@ -226,12 +239,13 @@ class Configuration(object):
     self.pip_wheelhouse = pip_wheelhouse
     self.pip_packages = get_default(pip_packages, [])
     self.qemu_binary = qemu_binary
+    self.phases = get_default(phases, list(PHASES))
+    self.skip = get_default(skip, [])
 
     # NOTE(josh): this is a pretty minimal list. Maybe we should add more by
     # default.
     self.binds = get_default(binds, ['/dev/urandom',
                                      '/etc/resolv.conf'])
-    self.terminate_after = get_default(terminate_after, 'finished')
 
     if self.chroot_impl == 'chroot':
       self.chroot_app = chroot.PosixApp
@@ -263,16 +277,21 @@ class Configuration(object):
     return {field: getattr(self, field)
             for field in self.get_field_names()}
 
+  def is_enabled(self, phase):
+    """
+    Return true if the given phase is enabled, and false otherwise.
+    """
+    return phase in self.phases and phase not in self.skip
+
 
 VARCHOICES = {
-    'apt_include_priorities': ['required', 'important', 'standard'],
+    'apt_include_priorities': ['none', 'required', 'important', 'standard'],
     'architecture': ['amd64', 'arm64', 'armhf'],
     'chroot_impl': ['none', 'chroot', 'proot', 'uchroot'],
     'suite': ['trusty', 'utopic', 'vivid', 'wily', 'xenial', 'yakkety',
               'zesty', 'artful'],
-    'terminate_after': ['apt-update', 'apt-download',
-                        'size-report', 'dpkg-extract', 'dpkg-configure'],
-
+    'phases': PHASES,
+    'skip': PHASES
 }
 
 VARDOCS = {
@@ -383,10 +402,14 @@ List of paths to bind-mount to the target rootfs. If a path is a realfile
 it will be copied into the rootfs and deleted afterward. If it is a
 directory then it will be bind-mounted (or emulated in the proot case)
 """,
-    "terminate_after":
+    "phases":
     """\
-Terminate early after performing the specified step.
-"""
+Perform only these phases. By default the phases performed are {}
+""".format(', '.join(PHASES)),
+    "skip":
+    """\
+    skip these phases
+    """
 }
 
 

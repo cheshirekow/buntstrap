@@ -2,7 +2,16 @@ import io
 from setuptools import setup
 
 GITHUB_URL = 'https://github.com/cheshirekow/buntstrap'
-VERSION = '0.1.3'
+
+VERSION = None
+with io.open('buntstrap/__init__.py', encoding='utf-8') as infile:
+  for line in infile:
+    line = line.strip()
+    if line.startswith('VERSION ='):
+      VERSION = line.split('=', 1)[1].strip().strip("'")
+
+assert VERSION is not None
+
 
 with io.open('README.rst', encoding='utf8') as infile:
   long_description = infile.read()

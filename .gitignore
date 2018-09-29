@@ -12,9 +12,10 @@
 # cmake builds
 .build
 
-# visual studio code
-.vscode
-
 # python packaging
 *.egg-info/
 dist/
+
+# pyces build
+.pyces-out
+

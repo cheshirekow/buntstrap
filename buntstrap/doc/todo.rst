@@ -2,7 +2,7 @@
 TODO
 ====
 
-1. Figure out how to excalate CAP_MKNOD for the container so that makedev can
+1. Figure out how to escalate CAP_MKNOD for the container so that makedev can
    work. You'll probably need to sudo it.
 
 http://man7.org/linux/man-pages/man7/capabilities.7.html
@@ -14,3 +14,7 @@ http://man7.org/linux/man-pages/man3/cap_set_proc.3.html
    on trusty to get things going.
 3. Finish implementing ``chroot_binds`` as a configuration option. Add
    ``qemu_binary`` and ``wheelhouse`` if those options are set.
+4. Add configuration options to add apt-get keys before installation, can be
+   used to include some ppas in the initial install
+5. Add convenience configuration option to add PPAs to the system after
+   install. 
